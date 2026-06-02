@@ -618,8 +618,30 @@ mutation AuthenticateWithPhoneNumber(
 - **解决**：在 `main.tsx` 的 `ReactDOM.createRoot().render()` 内包裹 `<BrowserRouter>`
 
 **问题 5: Apollo Client `gql` 解析报错 `Cannot read properties of undefined (reading 'FIELD')`，导致页面空白**
-- **原因**：Vite 对 `graphql` 包的预构建优化不完整
-- **解决**：在 `vite.config.ts` 中添加 `optimizeDeps: { include: ['graphql'] }`，并清除 `node_modules/.vite` 缓存后重启
+- **原因**：Vite 在预构建 `@apollo/client` 和 `graphql` (v16+) 时，由于 `graphql` 的 ES 模块采用了惰性加载机制（`init_kinds()`），当作为依赖被 `@apollo/client` 的分包直接导入时，其初始化方法未能正确触发，导致 `Kind` 对象在运行时为 `undefined`。
+- **关联冲突**：如果直接在 `optimizeDeps.exclude` 中排除 `graphql` 进行规避，legacy 订阅包 `subscriptions-transport-ws` 在浏览器中执行时，会因为其内部的动态 `require("graphql/language/printer")` 抛出 `Dynamic require is not supported` 错误而彻底崩溃。
+- **完美解决方案**：
+  1. **双向预编译 + 别名定位**：在 `vite.config.ts` 中同时 `include` 三个包，并使用精确的正则表达式重定向别名（防止干扰 `language/printer` 等子路径的解析）：
+     ```typescript
+     // vite.config.ts
+     export default defineConfig({
+       resolve: {
+         alias: [
+           { find: /^graphql$/, replacement: 'graphql/index.mjs' }
+         ]
+       },
+       optimizeDeps: {
+         include: ['graphql', '@apollo/client', 'subscriptions-transport-ws']
+       }
+     });
+     ```
+  2. **主入口强制早初始化（最核心关键）**：在前端项目主入口 `src/main.tsx` 的**绝对第一行**（任何其他引用和框架导入前），强行引入 `Kind` 并挂载至 `window`，强制在整页执行前激活 GraphQL 惰性加载器：
+     ```typescript
+     // src/main.tsx 的最顶部
+     import { Kind } from 'graphql';
+     (window as any)._graphqlKind = Kind;
+     ```
+     最后，在终端执行 `rm -rf node_modules/.vite` 清除本地编译缓存，并彻底重启 `npm run dev` 即可。
 
 **问题 6: 文件上传时 `Failed to execute 'digest' on 'SubtleCrypto': Algorithm: Unrecognized name`**
 - **原因**：浏览器 Web Crypto API 不支持 `MD5`
